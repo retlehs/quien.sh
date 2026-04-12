@@ -1,0 +1,131 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/charmbracelet/ssh"
+	"github.com/charmbracelet/wish"
+	"github.com/charmbracelet/wish/activeterm"
+	"github.com/creack/pty"
+)
+
+func main() {
+	host := getEnv("HOST", "0.0.0.0")
+	port := getEnv("PORT", "2222")
+	hostKeyPath := getEnv("HOST_KEY_PATH", ".ssh/host_key")
+
+	srv, err := wish.NewServer(
+		wish.WithAddress(fmt.Sprintf("%s:%s", host, port)),
+		wish.WithHostKeyPath(hostKeyPath),
+		wish.WithMiddleware(
+			quienMiddleware(),
+			activeterm.Middleware(),
+		),
+	)
+	if err != nil {
+		log.Fatalf("could not create server: %s", err)
+	}
+
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+
+	log.Printf("starting SSH server on %s:%s", host, port)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil {
+			log.Fatalf("server error: %s", err)
+		}
+	}()
+
+	<-done
+	log.Println("shutting down...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("shutdown error: %s", err)
+	}
+}
+
+func quienMiddleware() wish.Middleware {
+	return func(next ssh.Handler) ssh.Handler {
+		return func(s ssh.Session) {
+			ptyReq, winCh, _ := s.Pty()
+
+			args := s.Command()
+			cmdArgs := append([]string{}, args...)
+
+			// When args are provided, use non-interactive mode to avoid
+			// a race in quien's TUI where View is called before
+			// WindowSizeMsg arrives (causes panic on zero width).
+			// The prompt mode (no args) works fine interactively.
+			if len(cmdArgs) > 0 {
+				cmd := exec.CommandContext(s.Context(), "quien", cmdArgs...)
+				cmd.Env = append(os.Environ(),
+					fmt.Sprintf("TERM=%s", ptyReq.Term),
+					fmt.Sprintf("COLUMNS=%d", ptyReq.Window.Width),
+				)
+				cmd.Stdout = s
+				cmd.Stderr = s.Stderr()
+				if err := cmd.Run(); err != nil {
+					log.Printf("command error: %v", err)
+				}
+				next(s)
+				return
+			}
+
+			cmd := exec.CommandContext(s.Context(), "quien", cmdArgs...)
+			cmd.Env = append(os.Environ(), fmt.Sprintf("TERM=%s", ptyReq.Term))
+
+			rows := uint16(ptyReq.Window.Height)
+			cols := uint16(ptyReq.Window.Width)
+			if rows == 0 {
+				rows = 24
+			}
+			if cols == 0 {
+				cols = 80
+			}
+
+			ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
+				Rows: rows,
+				Cols: cols,
+			})
+			if err != nil {
+				log.Printf("pty start error: %v", err)
+				wish.Fatalln(s, fmt.Sprintf("failed to start: %v", err))
+				return
+			}
+			defer ptmx.Close()
+
+			// Handle window resizes
+			go func() {
+				for win := range winCh {
+					pty.Setsize(ptmx, &pty.Winsize{
+						Rows: uint16(win.Height),
+						Cols: uint16(win.Width),
+					})
+				}
+			}()
+
+			// Bridge I/O between SSH session and PTY
+			go io.Copy(ptmx, s)  // stdin: SSH -> PTY
+			io.Copy(s, ptmx)     // stdout: PTY -> SSH
+
+			cmd.Wait()
+			next(s)
+		}
+	}
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
