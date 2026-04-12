@@ -23,8 +23,9 @@ WORKDIR /app
 
 ENV HOST=0.0.0.0
 ENV PORT=2222
+ENV HTTP_PORT=8080
 ENV HOST_KEY_PATH=/app/.ssh/host_key
 
-EXPOSE 2222
+EXPOSE 2222 8080
 
 CMD ["/usr/local/bin/server"]

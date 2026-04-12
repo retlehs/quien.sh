@@ -6,8 +6,10 @@ primary_region = 'iad'
 [env]
   HOST = '0.0.0.0'
   PORT = '2222'
+  HTTP_PORT = '8080'
   HOST_KEY_PATH = '/app/.ssh/host_key'
 
+# SSH
 [[services]]
   protocol = 'tcp'
   internal_port = 2222
@@ -17,6 +19,22 @@ primary_region = 'iad'
 
   [[services.ports]]
     port = 22
+
+# HTTP/HTTPS
+[[services]]
+  protocol = 'tcp'
+  internal_port = 8080
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 80
+    handlers = ['http']
+
+  [[services.ports]]
+    port = 443
+    handlers = ['tls', 'http']
 
 [[vm]]
   memory = '256mb'

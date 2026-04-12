@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -15,15 +18,25 @@ import (
 	"github.com/charmbracelet/wish"
 	"github.com/charmbracelet/wish/activeterm"
 	"github.com/creack/pty"
+	"github.com/gorilla/websocket"
 )
+
+//go:embed static/*
+var static embed.FS
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 func main() {
 	host := getEnv("HOST", "0.0.0.0")
-	port := getEnv("PORT", "2222")
+	sshPort := getEnv("PORT", "2222")
+	httpPort := getEnv("HTTP_PORT", "8080")
 	hostKeyPath := getEnv("HOST_KEY_PATH", ".ssh/host_key")
 
-	srv, err := wish.NewServer(
-		wish.WithAddress(fmt.Sprintf("%s:%s", host, port)),
+	// SSH server
+	sshSrv, err := wish.NewServer(
+		wish.WithAddress(fmt.Sprintf("%s:%s", host, sshPort)),
 		wish.WithHostKeyPath(hostKeyPath),
 		wish.WithMiddleware(
 			quienMiddleware(),
@@ -31,16 +44,33 @@ func main() {
 		),
 	)
 	if err != nil {
-		log.Fatalf("could not create server: %s", err)
+		log.Fatalf("could not create SSH server: %s", err)
+	}
+
+	// HTTP server
+	staticFS, _ := fs.Sub(static, "static")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", handleWebSocket)
+	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	httpSrv := &http.Server{
+		Addr:    fmt.Sprintf("%s:%s", host, httpPort),
+		Handler: mux,
 	}
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
-	log.Printf("starting SSH server on %s:%s", host, port)
+	log.Printf("starting SSH server on %s:%s", host, sshPort)
+	log.Printf("starting HTTP server on %s:%s", host, httpPort)
+
 	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			log.Fatalf("server error: %s", err)
+		if err := sshSrv.ListenAndServe(); err != nil {
+			log.Fatalf("SSH server error: %s", err)
+		}
+	}()
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %s", err)
 		}
 	}()
 
@@ -48,9 +78,65 @@ func main() {
 	log.Println("shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("shutdown error: %s", err)
+	sshSrv.Shutdown(ctx)
+	httpSrv.Shutdown(ctx)
+}
+
+func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("websocket upgrade error: %v", err)
+		return
 	}
+	defer conn.Close()
+
+	cmd := exec.Command("quien")
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		log.Printf("pty start error: %v", err)
+		return
+	}
+	defer ptmx.Close()
+
+	// PTY -> WebSocket
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if err != nil {
+				// PTY closed (quien exited) — close WebSocket to trigger reconnect
+				conn.Close()
+				return
+			}
+			if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	// WebSocket -> PTY
+	for {
+		msgType, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		switch msgType {
+		case websocket.BinaryMessage, websocket.TextMessage:
+			if len(msg) > 0 && msg[0] == 1 && len(msg) >= 5 {
+				cols := uint16(msg[1])<<8 | uint16(msg[2])
+				rows := uint16(msg[3])<<8 | uint16(msg[4])
+				pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+			} else {
+				ptmx.Write(msg)
+			}
+		}
+	}
+
+	cmd.Process.Signal(syscall.SIGTERM)
+	cmd.Wait()
 }
 
 func quienMiddleware() wish.Middleware {
@@ -103,7 +189,6 @@ func quienMiddleware() wish.Middleware {
 			}
 			defer ptmx.Close()
 
-			// Handle window resizes
 			go func() {
 				for win := range winCh {
 					pty.Setsize(ptmx, &pty.Winsize{
@@ -113,9 +198,8 @@ func quienMiddleware() wish.Middleware {
 				}
 			}()
 
-			// Bridge I/O between SSH session and PTY
-			go io.Copy(ptmx, s)  // stdin: SSH -> PTY
-			io.Copy(s, ptmx)     // stdout: PTY -> SSH
+			go io.Copy(ptmx, s)
+			io.Copy(s, ptmx)
 
 			cmd.Wait()
 			next(s)

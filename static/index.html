@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quien.sh - A better WHOIS lookup tool</title>
+<meta name="description" content="Look up any domain or IP instantly. WHOIS, DNS, mail config, TLS, tech stack, and SEO analysis in one command.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #09090b;
+  --surface: #111113;
+  --border: #1e1e22;
+  --border-bright: #2a2a30;
+  --text: #e4e4e7;
+  --text-muted: #71717a;
+  --text-dim: #3f3f46;
+  --accent: #2dd4bf;
+  --accent-dim: rgba(45, 212, 191, 0.08);
+  --accent-glow: rgba(45, 212, 191, 0.15);
+  --blue: #38bdf8;
+  --font: 'JetBrains Mono', monospace;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -20%, var(--accent-glow), transparent),
+    radial-gradient(ellipse 60% 40% at 80% 80%, rgba(56, 189, 248, 0.04), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Noise texture overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 24px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Nav ── */
+nav {
+  padding: 20px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  opacity: 0;
+  animation: fadeIn 0.6s ease forwards;
+}
+
+nav .brand {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+nav .brand span { color: var(--accent); }
+
+nav .links {
+  display: flex;
+  gap: 24px;
+}
+
+nav .links a {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  transition: color 0.2s;
+}
+
+nav .links a:hover { color: var(--text); }
+
+/* ── Hero ── */
+.hero {
+  padding: 80px 0 60px;
+  text-align: center;
+}
+
+.hero-badge {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  background: var(--accent-dim);
+  padding: 6px 16px;
+  border-radius: 100px;
+  margin-bottom: 32px;
+  opacity: 0;
+  animation: fadeUp 0.6s ease 0.1s forwards;
+}
+
+.hero h1 {
+  font-size: clamp(48px, 10vw, 96px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin-bottom: 16px;
+  opacity: 0;
+  animation: fadeUp 0.6s ease 0.2s forwards;
+}
+
+.hero h1 .dot { color: var(--accent); }
+
+.hero .tagline {
+  font-size: 16px;
+  color: var(--text-muted);
+  font-weight: 300;
+  max-width: 520px;
+  margin: 0 auto 40px;
+  opacity: 0;
+  animation: fadeUp 0.6s ease 0.3s forwards;
+}
+
+/* ── Command Box ── */
+.cmd-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  padding: 14px 20px;
+  font-size: 15px;
+  cursor: pointer;
+  transition: border-color 0.3s, box-shadow 0.3s;
+  opacity: 0;
+  animation: fadeUp 0.6s ease 0.4s forwards;
+  position: relative;
+}
+
+.cmd-box:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 20px var(--accent-dim), 0 0 60px rgba(45, 212, 191, 0.03);
+}
+
+.cmd-box .prompt { color: var(--accent); }
+.cmd-box .text { color: var(--text); }
+
+.cmd-box .copy-icon {
+  color: var(--text-dim);
+  transition: color 0.2s;
+  flex-shrink: 0;
+}
+
+.cmd-box:hover .copy-icon { color: var(--text-muted); }
+
+.cmd-box .tooltip {
+  position: absolute;
+  top: -32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.cmd-box .tooltip.show { opacity: 1; }
+
+.hero .scroll-hint {
+  margin-top: 48px;
+  color: var(--text-dim);
+  font-size: 12px;
+  opacity: 0;
+  animation: fadeUp 0.6s ease 0.5s forwards;
+}
+
+.hero .scroll-hint span {
+  display: block;
+  margin-top: 8px;
+  animation: bobDown 2s ease-in-out infinite;
+}
+
+/* ── Features ── */
+.features {
+  padding: 40px 0 60px;
+}
+
+.features-header {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 24px;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.feature {
+  background: var(--surface);
+  padding: 24px;
+  transition: background 0.3s;
+}
+
+.feature:hover { background: #151517; }
+
+.feature .icon {
+  font-size: 13px;
+  color: var(--accent);
+  margin-bottom: 12px;
+  font-weight: 500;
+}
+
+.feature h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.feature p {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ── Terminal Section ── */
+.terminal-section {
+  padding: 40px 0 80px;
+}
+
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.terminal-header .label {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.terminal-header .status {
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+.terminal-header .status .dot-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.3s;
+}
+
+.terminal-header .status.connected .dot-indicator {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.terminal-wrapper {
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0c0c0e;
+  position: relative;
+}
+
+.terminal-wrapper::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 9px;
+  padding: 1px;
+  background: linear-gradient(180deg, rgba(45, 212, 191, 0.1), transparent 50%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.terminal-dots span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--border-bright);
+}
+
+.terminal-title {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.terminal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.terminal-btn {
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.terminal-btn:hover {
+  color: var(--text);
+  border-color: var(--border-bright);
+}
+
+#terminal {
+  padding: 8px 0 0;
+  min-height: 420px;
+}
+
+.terminal-overlay {
+  position: absolute;
+  inset: 0;
+  top: 37px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 9, 11, 0.8);
+  z-index: 2;
+  cursor: pointer;
+  transition: opacity 0.3s;
+}
+
+.terminal-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.terminal-overlay-content {
+  text-align: center;
+}
+
+.terminal-overlay-content .play-icon {
+  width: 48px;
+  height: 48px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 12px;
+  color: var(--accent);
+  transition: background 0.2s;
+}
+
+.terminal-overlay:hover .play-icon {
+  background: var(--accent-dim);
+}
+
+.terminal-overlay-content p {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.terminal-overlay-content p span {
+  color: var(--accent);
+}
+
+/* ── Install Section ── */
+.install {
+  padding: 40px 0 80px;
+  border-top: 1px solid var(--border);
+}
+
+.install-header {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 20px;
+}
+
+.install-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.install-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.install-item .label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.install-item code {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.install-item code .hl { color: var(--accent); }
+
+/* ── Footer ── */
+footer {
+  padding: 32px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+footer a:hover { color: var(--accent); }
+
+/* ── Animations ── */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes bobDown {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(4px); }
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Responsive ── */
+@media (max-width: 700px) {
+  .features-grid { grid-template-columns: repeat(2, 1fr); }
+  .install-grid { grid-template-columns: 1fr; }
+  .hero { padding: 48px 0 40px; }
+  .hero h1 { font-size: 48px; }
+  .cmd-box { font-size: 13px; padding: 12px 16px; }
+}
+
+@media (max-width: 480px) {
+  .features-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <nav>
+    <div class="brand"><span>~</span> quien.sh</div>
+    <div class="links">
+      <a href="https://github.com/retlehs/quien">GitHub</a>
+      <a href="#terminal-section">Try it</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-badge">Open Source</div>
+    <h1>quien<span class="dot">.</span>sh</h1>
+    <p class="tagline">A better WHOIS lookup tool. Domain intel, DNS records, mail config, TLS certs, tech stack, and SEO&nbsp;analysis&mdash;in one command.</p>
+
+    <div class="cmd-box" onclick="copyCommand()" id="cmdBox">
+      <span class="tooltip" id="tooltip">Copied!</span>
+      <span class="prompt">$</span>
+      <span class="text">ssh quien.sh</span>
+      <svg class="copy-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </div>
+
+  </section>
+
+  <!-- Terminal -->
+  <section class="terminal-section reveal" id="terminal-section">
+    <div class="terminal-header">
+      <div class="label">&mdash; try it</div>
+      <div class="status" id="termStatus">
+        <span class="dot-indicator"></span>
+        <span class="status-text">Click to connect</span>
+      </div>
+    </div>
+
+    <div class="terminal-wrapper">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <div class="terminal-title">quien.sh</div>
+        <div class="terminal-actions">
+          <button class="terminal-btn" onclick="reconnectTerminal()">Reconnect</button>
+        </div>
+      </div>
+      <div id="terminal"></div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features reveal">
+    <div class="features-header">&mdash; what you get</div>
+    <div class="features-grid">
+      <div class="feature">
+        <div class="icon">&gt; whois</div>
+        <h3>RDAP + WHOIS</h3>
+        <p>RDAP-first lookups with automatic WHOIS fallback. IANA referral for any&nbsp;TLD.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; dns</div>
+        <h3>DNS Records</h3>
+        <p>Full record resolution. Nameservers, A/AAAA, MX, TXT, and&nbsp;more.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; mail</div>
+        <h3>Mail Audit</h3>
+        <p>MX, SPF, DMARC, DKIM, and BIMI validation with VMC chain&nbsp;checks.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; tls</div>
+        <h3>TLS / SSL</h3>
+        <p>Certificate details, chain validation, expiry dates, and cipher&nbsp;info.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; stack</div>
+        <h3>Tech Stack</h3>
+        <p>Detect frameworks, CMS, CDN, analytics, and third-party services from&nbsp;HTML.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; seo</div>
+        <h3>SEO Analysis</h3>
+        <p>Indexability, structured data, Open Graph, meta tags, and Core Web&nbsp;Vitals.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; http</div>
+        <h3>HTTP Headers</h3>
+        <p>Response headers, security headers, redirects, and server&nbsp;info.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; 8.8.8.8</div>
+        <h3>IP Lookup</h3>
+        <p>Reverse DNS, ASN discovery via RDAP, BGP fallback, and PeeringDB&nbsp;enrichment.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&gt; all --json</div>
+        <h3>JSON Output</h3>
+        <p>Every subcommand outputs structured JSON for scripting and&nbsp;automation.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="install reveal">
+    <div class="install-header">&mdash; install locally</div>
+    <div class="install-grid">
+      <div class="install-item">
+        <div class="label">Homebrew</div>
+        <code><span class="hl">brew</span> install retlehs/tap/quien</code>
+      </div>
+      <div class="install-item">
+        <div class="label">Go</div>
+        <code><span class="hl">go</span> install github.com/retlehs/quien@latest</code>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>quien &mdash; by <a href="https://github.com/retlehs">retlehs</a></span>
+    <a href="https://github.com/retlehs/quien">github.com/retlehs/quien</a>
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script>
+// Copy command
+function copyCommand() {
+  navigator.clipboard.writeText('ssh quien.sh');
+  const tip = document.getElementById('tooltip');
+  tip.classList.add('show');
+  setTimeout(() => tip.classList.remove('show'), 1200);
+}
+
+// Scroll reveal + auto-connect terminal when visible
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      e.target.classList.add('visible');
+      if (e.target.id === 'terminal-section' && !ws) {
+        connectTerminal();
+      }
+    }
+  });
+}, { threshold: 0.1 });
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// Terminal
+let term, ws, fitAddon;
+
+function initTerminal() {
+  if (term) return;
+  term = new window.Terminal({
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 14,
+    lineHeight: 1.4,
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    theme: {
+      background: '#0c0c0e',
+      foreground: '#e4e4e7',
+      cursor: '#2dd4bf',
+      cursorAccent: '#0c0c0e',
+      selectionBackground: 'rgba(45, 212, 191, 0.2)',
+      black: '#09090b',
+      red: '#ef4444',
+      green: '#2dd4bf',
+      yellow: '#eab308',
+      blue: '#38bdf8',
+      magenta: '#a78bfa',
+      cyan: '#2dd4bf',
+      white: '#e4e4e7',
+      brightBlack: '#3f3f46',
+      brightRed: '#f87171',
+      brightGreen: '#5eead4',
+      brightYellow: '#facc15',
+      brightBlue: '#7dd3fc',
+      brightMagenta: '#c4b5fd',
+      brightCyan: '#5eead4',
+      brightWhite: '#fafafa',
+    },
+  });
+  fitAddon = new window.FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById('terminal'));
+  fitAddon.fit();
+  window.addEventListener('resize', () => fitAddon.fit());
+}
+
+function connectTerminal() {
+  initTerminal();
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.binaryType = 'arraybuffer';
+
+  const status = document.getElementById('termStatus');
+
+  ws.onopen = () => {
+    status.classList.add('connected');
+    status.querySelector('.status-text').textContent = 'Connected';
+    term.focus();
+
+    // Send initial size
+    const dims = fitAddon.proposeDimensions();
+    if (dims) sendResize(dims.cols, dims.rows);
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) {
+      term.write(new Uint8Array(e.data));
+    } else {
+      term.write(e.data);
+    }
+  };
+
+  ws.onclose = () => {
+    status.classList.remove('connected');
+    status.querySelector('.status-text').textContent = 'Reconnecting...';
+    // Auto-reconnect after quit so user gets a fresh prompt
+    setTimeout(() => {
+      term.clear();
+      connectTerminal();
+    }, 500);
+  };
+
+  term.onData((data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+    }
+  });
+
+  term.onResize(({ cols, rows }) => sendResize(cols, rows));
+
+  // Re-fit on resize
+  const ro = new ResizeObserver(() => {
+    fitAddon.fit();
+  });
+  ro.observe(document.getElementById('terminal'));
+}
+
+function sendResize(cols, rows) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const buf = new Uint8Array(5);
+  buf[0] = 1; // resize flag
+  buf[1] = (cols >> 8) & 0xff;
+  buf[2] = cols & 0xff;
+  buf[3] = (rows >> 8) & 0xff;
+  buf[4] = rows & 0xff;
+  ws.send(buf.buffer);
+}
+
+function reconnectTerminal() {
+  if (ws) { ws.close(); ws = null; }
+  if (term) { term.clear(); }
+  connectTerminal();
+}
+</script>
+</body>
+</html>
