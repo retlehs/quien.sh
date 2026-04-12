@@ -7,7 +7,6 @@ primary_region = 'iad'
   HOST = '0.0.0.0'
   PORT = '2222'
   HTTP_PORT = '8080'
-  HOST_KEY_PATH = '/app/.ssh/host_key'
 
 # SSH
 [[services]]
