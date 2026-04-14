@@ -1,7 +1,7 @@
 # Stage 1: Build quien binary
 FROM golang:1.24-alpine AS build-quien
 RUN apk add --no-cache git
-RUN GOTOOLCHAIN=auto go install github.com/retlehs/quien@v0.5.0
+RUN GOTOOLCHAIN=auto go install github.com/retlehs/quien@v0.6.2
 
 # Stage 2: Build SSH server
 FROM golang:1.24-alpine AS build-server
